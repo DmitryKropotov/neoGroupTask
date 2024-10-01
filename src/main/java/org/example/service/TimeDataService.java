@@ -1,9 +1,9 @@
 package org.example.service;
 
-import org.example.entity.TimeStampEntity;
+import org.example.model.TimeStampModel;
 
 import java.util.List;
 
 public interface TimeDataService {
-    List<TimeStampEntity> getAllTimes();
+    List<TimeStampModel> getAllTimes();
 }

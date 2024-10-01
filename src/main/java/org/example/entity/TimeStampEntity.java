@@ -1,15 +1,14 @@
 package org.example.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
+
 import java.time.Instant;
 
 @Entity
 @Table(name = "timestamps")
 public class TimeStampEntity {
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "id", nullable = false)
     private Integer id;
 
@@ -19,8 +18,7 @@ public class TimeStampEntity {
     public TimeStampEntity() {
     }
 
-    public TimeStampEntity(int id, Instant time) {
-        this.id = id;
+    public TimeStampEntity(Instant time) {
         this.time = time;
     }
 

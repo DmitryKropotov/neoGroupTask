@@ -1,6 +1,7 @@
 package org.example.controller;
 
 import org.example.entity.TimeStampEntity;
+import org.example.model.TimeStampModel;
 import org.example.service.TimeDataService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,7 +17,7 @@ public class TimeDataController {
     TimeDataService timeDataService;
 
     @RequestMapping(method = RequestMethod.GET, value = "/startRun")
-    public List<TimeStampEntity> getAllData() {
+    public List<TimeStampModel> getAllData() {
         return timeDataService.getAllTimes();
     }
 }
