@@ -6,19 +6,16 @@ import org.example.repository.TimeDataRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.OptionalInt;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
+;
 
 @Service
 public class TimeDataServiceImpl implements TimeDataService {
@@ -29,11 +26,11 @@ public class TimeDataServiceImpl implements TimeDataService {
     @Autowired
     private DataSource dataSource;
 
-    //private static int id = Integer.MIN_VALUE;
-
-    private final List<Instant> UNSAVED_TIME_INSTANTS = Collections.synchronizedList(new ArrayList<>());
-
-    private DatabaseConnectionFixer databaseConnectionFixer;
+    private static boolean threadsStarted = false;
+    private volatile boolean exceptionInSaveAll = false;
+    private volatile List<Instant> UNSAVED_TIME_INSTANTS = new ArrayList<>();//It's ok to do the list not Collections.synchronizedList, because I use ReentrantLock for synchronization
+    private final List<Instant> UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER = new ArrayList<>();//This list is used only in one thread
+    private ReentrantLock lock = new ReentrantLock();
 
     @Override
     public List<TimeStampModel> getAllTimes() {
@@ -47,33 +44,41 @@ public class TimeDataServiceImpl implements TimeDataService {
 
     @Scheduled(fixedDelay = 1000)
     public void saveTime() {
-        if (!UNSAVED_TIME_INSTANTS.isEmpty()) {
+        if(!threadsStarted) {
+            new DatabaseConnectionFixer().start();
+            threadsStarted = true;
+        }
+        if (!UNSAVED_TIME_INSTANTS.isEmpty() || !UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.isEmpty()) {
             Instant date = Instant.now();
-            UNSAVED_TIME_INSTANTS.add(date);
+            if(!exceptionInSaveAll && lock.tryLock()) {
+                try {
+                    if(!UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.isEmpty()) {
+                        UNSAVED_TIME_INSTANTS.addAll(UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER);
+                        UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.clear();
+                    }
+                    UNSAVED_TIME_INSTANTS.add(date);
+                } finally {
+                    lock.unlock();
+                }
+            } else {
+                UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.add(date);
+            }
         } else {
             Instant date = Instant.now();
-            try {
-//                ExecutorService executor = Executors.newSingleThreadExecutor();
-//                Future<Void> future = executor.submit(() -> {
-//                    timeDataRepository.save(new TimeStampEntity(date));
-//                    return null;
-//                });
-//                try {
-//                    future.get(5, TimeUnit.SECONDS); // Set timeout here
-//                } catch (TimeoutException e) {
-//                    future.cancel(true); // Cancel the operation
-//                    throw new MyCustomTimeoutException("Database operation timed out", e);
-//                } catch (ExecutionException | InterruptedException e) {
-//                    throw new RuntimeException(e);
-//                } finally {
-//                    executor.shutdown();
-//                }
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            Future<Void> future = executor.submit(() -> {
                 timeDataRepository.save(new TimeStampEntity(date));
-            } catch (Exception e) {
-                System.out.println("Connection lost");
+                return null;
+            });
+            try {
+                future.get(100, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                future.cancel(true);
                 UNSAVED_TIME_INSTANTS.add(date);
-                DatabaseConnectionFixer databaseConnectionFixer = new DatabaseConnectionFixer();
-                databaseConnectionFixer.start();
+            } catch (ExecutionException | InterruptedException e) {
+                UNSAVED_TIME_INSTANTS.add(date);
+            } finally {
+                executor.shutdown();
             }
         }
     }
@@ -89,7 +94,8 @@ public class TimeDataServiceImpl implements TimeDataService {
 
         @Override
         public void run() {
-            do {
+            while (true) {
+                while (UNSAVED_TIME_INSTANTS.isEmpty()) {}
                 try {
                     Thread.sleep(5000);
                 } catch (InterruptedException e) {
@@ -97,27 +103,45 @@ public class TimeDataServiceImpl implements TimeDataService {
                 }
                 try (Connection connection = dataSource.getConnection()) {
                     if (connection != null) {
-                        synchronized (UNSAVED_TIME_INSTANTS) {
-                            saveAllInstants();
-                            UNSAVED_TIME_INSTANTS.clear();
-                        }
+                        ExecutorService executor = Executors.newSingleThreadExecutor();
+                        // Process data from the list
+                        Future<Void> future = executor.submit(() -> {
+                            lock.lock();
+                            List<Instant> copyOfUnsavedTimeInstants = new ArrayList<>(UNSAVED_TIME_INSTANTS);
+                            try {
+                                timeDataRepository.saveAll(convertListTimeInstantToTimeStampEntityList(copyOfUnsavedTimeInstants));
+                                UNSAVED_TIME_INSTANTS.clear();
+                            } finally {
+                                lock.unlock();
+                            }
+                            return null;
+                        });
+                        try {
+                            future.get(2, TimeUnit.SECONDS);
+                            exceptionInSaveAll = false;
+                        } catch (TimeoutException e) {
+                            exceptionInSaveAll = true;
+                            future.cancel(true); // Cancel the operation
+                        } catch (ExecutionException | InterruptedException e) {
+                            exceptionInSaveAll = true;
+                       } finally {
+                            executor.shutdown();
+                       }
                     } else {
                         System.out.println("Connection is still unavailable");
                     }
                 } catch (SQLException e) {
                     System.out.println("Connection is still unavailable" + e.getMessage());
                 }
-            } while (!UNSAVED_TIME_INSTANTS.isEmpty());
+            }
         }
+    }
 
-        private void saveAllInstants() {
-            UNSAVED_TIME_INSTANTS.forEach((Instant timeInstant) -> {
-                try {
-                    timeDataRepository.save(new TimeStampEntity(/*id++, */timeInstant));
-                } catch (Exception e) {
-                    System.out.println(e);
-                }
-            });
+    private List<TimeStampEntity> convertListTimeInstantToTimeStampEntityList(List<Instant> instants) {
+        List<TimeStampEntity> timeStampEntityList = new ArrayList<>();
+        for (Instant instant : instants) {
+            timeStampEntityList.add(new TimeStampEntity(instant));
         }
+        return timeStampEntityList;
     }
 }
