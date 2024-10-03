@@ -104,7 +104,6 @@ public class TimeDataServiceImpl implements TimeDataService {
                 try (Connection connection = dataSource.getConnection()) {
                     if (connection != null) {
                         ExecutorService executor = Executors.newSingleThreadExecutor();
-                        // Process data from the list
                         Future<Void> future = executor.submit(() -> {
                             lock.lock();
                             List<Instant> copyOfUnsavedTimeInstants = new ArrayList<>(UNSAVED_TIME_INSTANTS);
@@ -121,7 +120,7 @@ public class TimeDataServiceImpl implements TimeDataService {
                             exceptionInSaveAll = false;
                         } catch (TimeoutException e) {
                             exceptionInSaveAll = true;
-                            future.cancel(true); // Cancel the operation
+                            future.cancel(true);
                         } catch (ExecutionException | InterruptedException e) {
                             exceptionInSaveAll = true;
                        } finally {
