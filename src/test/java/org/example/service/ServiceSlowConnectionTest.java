@@ -30,11 +30,9 @@ public class ServiceSlowConnectionTest {
         Instant dateBeginningOfTest = Instant.now();
         Thread.sleep(20700);
         Instant dateEndOfTest = Instant.now();
-        List<TimeStampEntity> times = timeDataRepository.findAll().stream().filter(timeStampEntity ->
-                timeStampEntity.getTime().isAfter(dateBeginningOfTest) && timeStampEntity.getTime().isBefore(dateEndOfTest)).toList();
         List<TimeStampModel> timeDataServices = timeDataService.getAllTimes().stream().filter(timeStampEntity ->
                 timeStampEntity.getTime().isAfter(dateBeginningOfTest) && timeStampEntity.getTime().isBefore(dateEndOfTest)).toList();
         assert GeneralMethods.isListInAscendingOrder(timeDataServices);
-        assert times.size() == 20;
+        assert timeDataServices.size() == 20;
     }
 }

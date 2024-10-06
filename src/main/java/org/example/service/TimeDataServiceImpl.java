@@ -31,6 +31,7 @@ public class TimeDataServiceImpl implements TimeDataService {
     private volatile List<Instant> UNSAVED_TIME_INSTANTS = new ArrayList<>();//It's ok to do the list not Collections.synchronizedList, because I use ReentrantLock for synchronization
     private final List<Instant> UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER = new ArrayList<>();//This list is used only in one thread
     private ReentrantLock lock = new ReentrantLock();
+    private Object synchronizer = new Object();
 
     @Override
     public List<TimeStampModel> getAllTimes() {
@@ -52,11 +53,14 @@ public class TimeDataServiceImpl implements TimeDataService {
             Instant date = Instant.now();
             if(!exceptionInSaveAll && lock.tryLock()) {
                 try {
-                    if(!UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.isEmpty()) {
-                        UNSAVED_TIME_INSTANTS.addAll(UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER);
-                        UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.clear();
+                    synchronized (synchronizer) {
+                        if (!UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.isEmpty()) {
+                            UNSAVED_TIME_INSTANTS.addAll(UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER);
+                            UNSAVED_TIME_INSTANTS_TEMPORAL_SAVER.clear();
+                        }
+                        UNSAVED_TIME_INSTANTS.add(date);
+                        synchronizer.notify();
                     }
-                    UNSAVED_TIME_INSTANTS.add(date);
                 } finally {
                     lock.unlock();
                 }
@@ -74,9 +78,15 @@ public class TimeDataServiceImpl implements TimeDataService {
                 future.get(100, TimeUnit.MILLISECONDS);
             } catch (TimeoutException e) {
                 future.cancel(true);
-                UNSAVED_TIME_INSTANTS.add(date);
+                synchronized(synchronizer) {
+                    UNSAVED_TIME_INSTANTS.add(date);
+                    synchronizer.notify();
+                }
             } catch (ExecutionException | InterruptedException e) {
-                UNSAVED_TIME_INSTANTS.add(date);
+                synchronized(synchronizer) {
+                    UNSAVED_TIME_INSTANTS.add(date);
+                    synchronizer.notify();
+                }
             } finally {
                 executor.shutdown();
             }
@@ -95,7 +105,15 @@ public class TimeDataServiceImpl implements TimeDataService {
         @Override
         public void run() {
             while (true) {
-                while (UNSAVED_TIME_INSTANTS.isEmpty()) {}
+                synchronized(synchronizer) {
+                    while (UNSAVED_TIME_INSTANTS.isEmpty()) {
+                        try {
+                            synchronizer.wait();
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                }
                 try {
                     Thread.sleep(5000);
                 } catch (InterruptedException e) {
